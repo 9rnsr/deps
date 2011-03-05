@@ -10,13 +10,29 @@ import xtk.filesys;
 import std.typecons;
 alias Hashable!(Tuple!(string, "m", string, "f")) Mod;
 
+import std.process;
+
 void main(string[] args)
 {
+	if (args.length == 1)
+	{
+		writefln("usage : deps");
+		return;
+	}
+	
 	auto fname = args[1];
+	writefln("filename = %s", fname);
 	
 	auto dmd_path = which("dmd");
 	writefln("dmd_path = %s", dmd_path);
 	
+	auto dmd_args = ["-deps=out.deps", "-o-"] ~ args[1 .. $];
+	writefln("dmd_args = [%(\"%s\", %)\"]", dmd_args);
+	
+	//using std.process
+	dmd_args = " " ~ dmd_args;	// std.c.process.execvp/spawnvp hack
+	auto rc = spawnvp(P_WAIT, dmd_path, dmd_args);	// undocumented
+	writefln("return code = %s", rc);
 	
 	bool[Mod][Mod] deps;
 	//load_deps(fname, deps);
