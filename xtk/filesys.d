@@ -2,8 +2,10 @@ module xtk.filesys;
 
 public import std.file;
 public import std.path;
+public import std.datetime;
 import std.process, std.array;
 alias std.path.defaultExt defExt;
+alias std.path.addExt setExt;
 
 //debug = 1;
 debug(1) import std.stdio;
