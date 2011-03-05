@@ -9,7 +9,7 @@ import xtk.filesys;
 
 import std.typecons;
 
-//debug = PrintDeps;
+debug = PrintDeps;
 
 string curdir;
 string objdir;
@@ -39,31 +39,75 @@ class Module
 			(objdir ? objdir : curdir), f.basename.setExt("obj"));
 		otime = timeLastModified(oname, SysTime.min);
 		
-		debug(PrintDeps) writefln("module = %s", m);
-		debug(PrintDeps) writefln("     f = %s (%s)", ftime, fname);
-		debug(PrintDeps) writefln("     o = %s (%s)", otime, oname);
 		if (otime < ftime)
+		{
 			recons = true;
+			
+			debug(PrintDeps) writefln("object depend");
+			debug(PrintDeps) writefln("module = %s", m);
+			debug(PrintDeps) writefln("     f = %s (%s)", ftime, fname);
+			debug(PrintDeps) writefln("     o = %s (%s)", otime, oname);
+		}
 	}
 	
 	void depends(string srcm, string srcf)
 	{
 		auto src = Module.get(srcm , srcf);
+		src.targets[this] = true;
+		
 		if (src !in sources)
 		{
 			sources[src] = true;	// set
-			if (!recons)
+/+			if (!recons)
 			{
-				if (this.otime < src.ftime)
+				if (this.ftime < src.ftime && this.otime < src.ftime)
+				{
 					recons = true;
-			}
+					debug(PrintDeps) writefln("source depend");
+					debug(PrintDeps) writefln("module = %s", mname);
+					debug(PrintDeps) writefln("   src = %s (%s)", src.ftime, src.fname);
+					debug(PrintDeps) writefln("   tgt = %s (%s)",     ftime,     fname);
+				}
+			}+/
 		}
 	}
 	
 	string mname, fname;
 	SysTime ftime, otime;
+	
 	bool recons;
+	bool toured;
+	
 	bool[Module] sources;	// set
+	bool[Module] targets;	// set
+	
+	
+	static void resolve()
+	{
+		//stdなどをrecons=trueの群から除外する
+		
+		// src->targetへreconsを感染させる
+		size_t cnt;
+		do{
+			cnt = 0;
+			foreach (src; modules)
+			{
+				if (!src.recons) continue;
+				
+				foreach (tgt, __dummy; src.targets)
+				{
+					if (!tgt.recons)
+					{
+						tgt.recons = true, ++cnt;
+						debug(PrintDeps) writefln("source depend");
+						debug(PrintDeps) writefln("module = %s", tgt.mname);
+						debug(PrintDeps) writefln("   src = %s (%s)", src.ftime, src.fname);
+						debug(PrintDeps) writefln("   tgt = %s (%s)", tgt.ftime, tgt.fname);
+					}
+				}
+			}
+		}while (cnt > 0)
+	}
 }
 
 
@@ -79,11 +123,16 @@ void main(string[] args)
 		return;
 	}
 	
+	string[] impdir;
+	
 	curdir = std.file.getcwd();
 	getopt(args,
-		"od",	&objdir
+		"|od",	&objdir,
+		"|I", delegate(string opt, string val){
+			impdir ~= val;
+		}
 	);
-	debug(PrintDeps) writefln("curdir = %s, objdir = %s", curdir, objdir);
+	writefln("curdir = %s, objdir = %s", curdir, objdir.rel2abs);
 	
 	auto fname = args[1];
 	debug(1) writefln("filename = %s", fname);
@@ -94,6 +143,11 @@ void main(string[] args)
 	enum dname = "out.deps";
 	
 	auto dmd_args = ["-deps="~dname, "-o-"] ~ args[1 .. $];
+	if (impdir.length > 0)
+	{
+		foreach (dir; impdir)
+			dmd_args ~= "-I"~dir;
+	}
 	debug(1) writefln("dmd_args = [%(\"%s\", %)\"]", dmd_args);
 	
 	//using std.process
@@ -128,4 +182,5 @@ void load_deps(string depsfile)
 		
 		Module.get(tgtm, tgtf).depends(srcm, srcf);
 	}
+	Module.resolve();
 }
