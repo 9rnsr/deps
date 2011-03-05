@@ -13,6 +13,12 @@ debug = PrintDeps;
 
 string curdir;
 string objdir;
+string dmd_path;
+string scini_path;
+string deps_name = "out.deps";
+
+string[] exclude_dirs;
+
 
 class Module
 {
@@ -33,13 +39,17 @@ class Module
 	
 	this(string m, string f)
 	{
-		mname = m, fname = f;
-		ftime = timeLastModified(f);
-		string oname = std.path.join(
+		mname = m;
+		
+		fname = f;
+		oname = std.path.join(
 			(objdir ? objdir : curdir), f.basename.setExt("obj"));
+		ftime = timeLastModified(f);
 		otime = timeLastModified(oname, SysTime.min);
 		
-		if (otime < ftime)
+		exclude = excludeCheck(fname);
+		
+		if (!exclude && otime < ftime)
 		{
 			recons = true;
 			
@@ -58,29 +68,33 @@ class Module
 		if (src !in sources)
 		{
 			sources[src] = true;	// set
-/+			if (!recons)
-			{
-				if (this.ftime < src.ftime && this.otime < src.ftime)
-				{
-					recons = true;
-					debug(PrintDeps) writefln("source depend");
-					debug(PrintDeps) writefln("module = %s", mname);
-					debug(PrintDeps) writefln("   src = %s (%s)", src.ftime, src.fname);
-					debug(PrintDeps) writefln("   tgt = %s (%s)",     ftime,     fname);
-				}
-			}+/
 		}
 	}
 	
-	string mname, fname;
+	string mname;
+	string  fname, oname;
 	SysTime ftime, otime;
 	
 	bool recons;
-	bool toured;
+	bool exclude;
 	
 	bool[Module] sources;	// set
 	bool[Module] targets;	// set
 	
+	
+	static bool excludeCheck(string path)
+	{
+		auto path_ = path.tolower;
+		
+		foreach (dir; exclude_dirs)
+		{
+			auto dir_ = dir.tolower();
+			
+			if (path_.length >= dir_.length && path_[0 .. dir_.length] == dir_)
+				return true;
+		}
+		return false;
+	}
 	
 	static void resolve()
 	{
@@ -92,6 +106,7 @@ class Module
 			cnt = 0;
 			foreach (src; modules)
 			{
+				if (src.exclude) continue;
 				if (!src.recons) continue;
 				
 				foreach (tgt, __dummy; src.targets)
@@ -123,43 +138,112 @@ void main(string[] args)
 		return;
 	}
 	
+	// parsing arguments
 	string[] impdir;
-	
-	curdir = std.file.getcwd();
 	getopt(args,
+		std.getopt.config.passThrough,
 		"|od",	&objdir,
 		"|I", delegate(string opt, string val){
 			impdir ~= val;
 		}
 	);
+
+	// get environments
+	curdir = std.file.getcwd();
 	writefln("curdir = %s, objdir = %s", curdir, objdir.rel2abs);
 	
+	dmd_path = where_dmd();
+	scini_path = where_scini();
+	debug(1) writefln("dmd    path = %s", dmd_path);
+	debug(1) writefln("sc.ini path = %s", scini_path);
+
+	auto dmd2dir = dmd_path.dirname.chompPath().chompPath();	// chomp (windows\bin)
+	exclude_dirs = [
+		joinPath(dmd2dir, `src\phobos`),
+		joinPath(dmd2dir, `src\druntime`),
+		joinPath(dmd2dir, `user\src\`)];
+	debug(1) writefln("dmd2dir = %s", dmd2dir);
+	debug(1) writefln("exclude_dirs = %s", exclude_dirs);
+
 	auto fname = args[1];
 	debug(1) writefln("filename = %s", fname);
 	
-	auto dmd_path = which("dmd");
-	debug(1) writefln("dmd_path = %s", dmd_path);
-	
-	enum dname = "out.deps";
-	
-	auto dmd_args = ["-deps="~dname, "-o-"] ~ args[1 .. $];
+	string[] import_args;
 	if (impdir.length > 0)
 	{
 		foreach (dir; impdir)
-			dmd_args ~= "-I"~dir;
+			import_args ~= "-I"~dir;
 	}
-	debug(1) writefln("dmd_args = [%(\"%s\", %)\"]", dmd_args);
+
+	{
+		auto dmd_args = args[1 .. $] ~ ["-deps="~deps_name, "-o-"] ~ import_args;
+		debug(1) writefln("dmd_args = [%(\"%s\", %)\"]", dmd_args);
+		
+		//using std.process
+		dmd_args = " " ~ dmd_args;	// std.c.process.execvp/spawnvp hack
+		auto rc = spawnvp(P_WAIT, dmd_path, dmd_args);	// undocumented
+		debug(1) writefln("return code = %s", rc);
+		if (rc != 0) return;
+	}
 	
-	//using std.process
-	dmd_args = " " ~ dmd_args;	// std.c.process.execvp/spawnvp hack
-	auto rc = spawnvp(P_WAIT, dmd_path, dmd_args);	// undocumented
-	debug(1) writefln("return code = %s", rc);
+	load_deps(deps_name);
+	Module.resolve();
 	
-	load_deps(dname);
+/+	string[] build_args;
 	foreach (mod; Module.modules)
 	{
 		if (mod.recons)
 			writefln("recons: %s (%s)", mod.mname, mod.fname);
+		
+		if (mod.recons)
+			build_args ~= mod.fname;
+		else if (!mod.exclude)
+			build_args ~= mod.oname;
+	}
+	
+	writefln("%s", build_args);
+	{
+		auto dmd_args = build_args ~ import_args;
+		if (objdir)
+			dmd_args ~= "-od"~objdir;
+		dmd_args ~= "-of"~fname.setExt("exe");
+		debug(1) writefln("dmd_args = [%(\"%s\", %)\"]", dmd_args);
+		
+		dmd_args = " " ~ dmd_args;	// std.c.process.execvp/spawnvp hack
+		auto rc = spawnvp(P_WAIT, dmd_path, dmd_args);	// undocumented
+		debug(1) writefln("return code = %s", rc);
+		if (rc != 0) return;
+	}+/
+
+	{
+		string[] build_args;
+		
+		auto opt_args = import_args;
+		if (objdir)
+			opt_args ~= "-od"~objdir;
+
+		foreach (mod; Module.modules)
+		{
+			if (mod.recons)
+				writefln("recons: %s (%s)", mod.mname, mod.fname);
+			
+			if (mod.recons)
+			{
+				auto dmd_args = [" ", mod.fname] ~ opt_args ~ "-c";
+				debug(1) writefln("dmd_args = [%(\"%s\", %)\"]", dmd_args);
+				auto rc = spawnvp(P_WAIT, dmd_path, dmd_args);	// undocumented
+			}
+			
+			if (!mod.exclude)
+				build_args ~= mod.oname;
+		}
+		
+		{
+			auto dmd_args = " " ~ build_args ~ opt_args ~ ("-of"~fname.setExt("exe"));
+			debug(1) writefln("dmd_args = [%(\"%s\", %)\"]", dmd_args);
+			auto rc = spawnvp(P_WAIT, dmd_path, dmd_args);	// undocumented
+			debug(1) writefln("return code = %s", rc);
+		}
 	}
 }
 
@@ -182,5 +266,18 @@ void load_deps(string depsfile)
 		
 		Module.get(tgtm, tgtf).depends(srcm, srcf);
 	}
-	Module.resolve();
+}
+
+string where_dmd()
+{
+	return which("dmd");
+}
+
+string where_scini()
+{
+	auto home = environment["HOME"];
+	if (home.length)
+		return which("sc.ini", [`.\`, home, dmd_path.dirname]);
+	else
+		return which("sc.ini", [`.\`, dmd_path.dirname]);
 }
